@@ -93,7 +93,7 @@ impl AppWindow {
             .with_new_window_req_handler(move |url, _| { let _ = on_open.try_send(WebEvent::Open(p3.clone(), url)); NewWindowResponse::Deny })
             .with_bounds(Rect::default())
             .build_as_child(&handle)?;
-        round_bottom(&view);
+        round_corners(&view);
         Ok(view)
     }
 
@@ -161,7 +161,9 @@ impl AppWindow {
         }
         let (view, shown, drawn, frame) = (w.view.clone(), w.shown.clone(), w.drawn.clone(), self.web_frame_no);
         let blur = w.view.clone();
-        div().size_full().child(
+        // A frame of the pane's own background round the page, so it never runs into the pane's border
+        // or the toolbar's line (its corners are rounded natively, round_corners).
+        div().size_full().p(settings::z(6.)).child(
             canvas(
                 move |bounds, _, _| {
                     let _ = view.set_bounds(Rect {
@@ -209,9 +211,9 @@ impl AppWindow {
     }
 }
 
-/// The page sits in a pane with rounded corners, but it is a native view GPUI can't clip: round its
-/// own bottom corners (the top meets the toolbar). A layer's y grows upward, so the bottom is MinY.
-fn round_bottom(view: &wry::WebView) {
+/// The page sits as a card inset in its pane (render_web) and GPUI can't clip a native view: round
+/// its own corners, all four.
+fn round_corners(view: &wry::WebView) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use wry::WebViewExtMacOS;
@@ -221,10 +223,10 @@ fn round_bottom(view: &wry::WebView) {
         let _: () = msg_send![wk, setWantsLayer: true];
         let layer: *mut AnyObject = msg_send![wk, layer];
         if let Some(layer) = layer.as_ref() {
-            let _: () = msg_send![layer, setCornerRadius: 9.0f64];
+            let _: () = msg_send![layer, setCornerRadius: 7.0f64];
             let _: () = msg_send![layer, setMasksToBounds: true];
-            // kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner
-            let _: () = msg_send![layer, setMaskedCorners: 3usize];
+            // All four (kCALayerMinXMinYCorner | MaxXMinY | MinXMaxY | MaxXMaxY).
+            let _: () = msg_send![layer, setMaskedCorners: 15usize];
         }
     }
 }

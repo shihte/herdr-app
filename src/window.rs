@@ -4132,6 +4132,10 @@ impl AppWindow {
         let id = n.id.clone();
         el = el.child(canvas(move |b, _, _| { bounds_map.borrow_mut().insert(id, b); }, |_, _, _, _| {}).absolute().size_full());
         el = apply_look(el, n, focused.contains(&n.id));
+        // SiaoDesk: a drawer about to close trades its border for running dashes (drawer_hint_el).
+        if self.drawer_hint.as_deref() == Some(n.id.as_str()) {
+            el = el.border_color(gpui::transparent_black());
+        }
         if n.window_drag {
             el = self.window_drag(el, cx);
         }
@@ -4366,35 +4370,43 @@ impl AppWindow {
     }
 
     /// SiaoDesk: a pane dragged down to almost nothing by its divider closes (pull a terminal shut).
-    /// The running dashes round the drawer `drawer.hint` names: a 2 px dashed outline whose dashes
-    /// travel along the edge (the start point moves round it), redrawn every frame while it shows.
+    /// The running dashes round the drawer `drawer.hint` names: they take the place of its border (same
+    /// width, same rounded corners) and travel along it — the dash pattern is written out once round
+    /// the edge, starting `shift` px in, and `shift` grows with time. Redrawn every frame while it shows.
     fn drawer_hint_el(&self, id: &str) -> Option<AnyElement> {
         if self.drawer_hint.as_deref() != Some(id) { return None; }
+        let node = self.chrome.find(id)?;
+        // The canvas sits inside the (now clear) border: draw just inside it, corners eased to match.
+        let border = pane_size::node_border(node, false).map_or(1.0, |l| l.width);
+        let radius = (node.radius.unwrap_or(0.0) - border).max(0.0);
+        let width = border.max(1.5);
         let start = *DRAWER_HINT_EPOCH.get_or_init(Instant::now);
         let color = c("blocked");
         Some(canvas(|_, _, _| {}, move |b, _, window, _| {
-            let inset = px(1.5);
-            let (l, t) = (b.origin.x + inset, b.origin.y + inset);
-            let (r, btm) = (b.right() - inset, b.bottom() - inset);
+            let half = settings::z(width) / 2.0;
+            let (l, t, r, btm) = (b.origin.x + half, b.origin.y + half, b.right() - half, b.bottom() - half);
             let (w, h) = (f32::from(r - l), f32::from(btm - t));
             if w < 4.0 || h < 4.0 { return; }
-            // Corners in order round the edge; begin `shift` px along it and go once round.
-            let per = 2.0 * (w + h);
+            let rad = f32::from(settings::z(radius)).min(w / 2.0).min(h / 2.0).max(0.0);
+            let rr = point(px(rad), px(rad));
+            let mut path = PathBuilder::stroke(settings::z(width));
+            path.move_to(point(l + px(rad), t));
+            path.line_to(point(r - px(rad), t));
+            path.arc_to(rr, px(0.), false, true, point(r, t + px(rad)));
+            path.line_to(point(r, btm - px(rad)));
+            path.arc_to(rr, px(0.), false, true, point(r - px(rad), btm));
+            path.line_to(point(l + px(rad), btm));
+            path.arc_to(rr, px(0.), false, true, point(l, btm - px(rad)));
+            path.line_to(point(l, t + px(rad)));
+            path.arc_to(rr, px(0.), false, true, point(l + px(rad), t));
+            // 8 on, 6 off, shifted along by `shift`, written out to cover the whole edge.
+            let perimeter = 2.0 * (w + h) - (8.0 - 2.0 * std::f32::consts::PI) * rad;
             let shift = (start.elapsed().as_secs_f32() * 40.0) % 14.0;
-            let at = |d: f32| -> Point<Pixels> {
-                let d = d.rem_euclid(per);
-                if d < w { point(l + px(d), t) }
-                else if d < w + h { point(r, t + px(d - w)) }
-                else if d < 2.0 * w + h { point(r - px(d - w - h), btm) }
-                else { point(l, btm - px(d - 2.0 * w - h)) }
-            };
-            let mut path = PathBuilder::stroke(px(2.)).dash_array(&[px(8.), px(6.)]);
-            path.move_to(at(shift));
-            for corner in [w, w + h, 2.0 * w + h, per] {
-                let d = if corner > shift { corner } else { corner + per };
-                path.line_to(at(d));
-            }
-            path.line_to(at(shift + per));
+            let mut dashes = if shift < 8.0 { vec![8.0 - shift, 6.0] } else { vec![0.0, 14.0 - shift] };
+            let mut covered: f32 = dashes.iter().sum();
+            while covered < perimeter + 14.0 { dashes.extend([8.0, 6.0]); covered += 14.0; }
+            let dashes: Vec<Pixels> = dashes.into_iter().map(px).collect();
+            let path = path.dash_array(&dashes);
             if let Ok(p) = path.build() { window.paint_path(p, color); }
             window.request_animation_frame();
         }).absolute().size_full().into_any_element())
