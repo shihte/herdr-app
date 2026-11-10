@@ -3367,7 +3367,7 @@ impl AppWindow {
                 self.focused_pane = Some(id.clone());
             }
             "drawer.hint" => {
-                let id = Self::owned(a, "id").filter(|id| a.get("on").and_then(Value::as_bool) != Some(false));
+                let id = Self::owned(a, "id").filter(|_| a.get("on").and_then(Value::as_bool) != Some(false));
                 if id != self.drawer_hint { self.drawer_hint = id; }
             }
             "drawer.close" => {
@@ -4216,6 +4216,12 @@ impl AppWindow {
                 }
                 None => div().into_any_element(),
             },
+            // A 預覽 block: the SiaoWeb mod draws the toolbar, the page fills the rest. A tab pane's
+            // toolbar is its header, so there the page is all of it.
+            Content::Mod { name, .. } if name == web::MOD && self.chrome.find(&n.id).is_some() => div().size_full().flex().flex_col()
+                .child(div().flex_none().h(settings::z(40.)).w_full().flex().child(self.render_slot(&n.id, cx)))
+                .child(div().flex_1().min_h_0().w_full().child(self.render_web(&n.id)))
+                .into_any_element(),
             Content::Mod { name, .. } if name == web::MOD => self.render_web(&n.id),
             Content::Mod { .. } => self.render_slot(&n.id, cx),
             Content::Agent { .. } => match self.shown_agent() {
@@ -5047,7 +5053,7 @@ impl Render for AppWindow {
         if crate::anim::take_busy() {
             window.request_animation_frame();
         }
-        self.web_frame();
+        self.web_frame(window, cx);
         window.set_rem_size(px(settings::ui_font_size()));
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self

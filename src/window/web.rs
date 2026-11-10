@@ -1,7 +1,8 @@
-//! SiaoDesk: 預覽 panes show a real web page — a WKWebView (through wry, as gpui-kit's gpui-wry does),
-//! not pictures of a headless browser. A pane is a mod pane of the `SiaoWeb` mod (props `{url, title}`);
-//! Herdr draws the page in its place, and the props follow the page so the pane header (SiaoPaneHead)
-//! can show the address. Commands: `web.open {pane?, url}`, `web.back`, `web.forward`, `web.reload`.
+//! SiaoDesk: real web pages — a WKWebView (through wry, as gpui-kit's gpui-wry does), not pictures of a
+//! headless browser. Anything whose content is the `SiaoWeb` mod (props `{url, title}`) is a page: a tab
+//! pane (a browser tab; its header, SiaoPaneHead, is the toolbar) or a layout block (預覽 in the right
+//! column; the SiaoWeb mod draws the toolbar on top and the page fills the rest). The props follow the
+//! page so the toolbar can show the address. Commands: `web.open {pane?, url}`, `web.back`, `web.forward`, `web.reload`.
 //!
 //! The page is a native view above the window's own drawing, so it covers whatever GPUI draws in its
 //! place. While a dialog, popup, menu or full-window overlay is up (the quick guide, the drawer drag), or
@@ -33,12 +34,22 @@ impl AppWindow {
     /// The web panes that should exist: every SiaoWeb pane in every tab (a page keeps its place and
     /// history while its tab is in the background).
     fn web_panes(&self) -> Vec<(String, String)> {
-        self.model.tabs().flat_map(|c| c.root.panes()).filter_map(|p| match p.content() {
+        let page = |p: &Node| match p.content() {
             Some(Content::Mod { name, props }) if name == MOD => {
                 Some((p.id.clone(), props.get("url").and_then(Value::as_str).unwrap_or(HOME).to_owned()))
             }
             _ => None,
-        }).collect()
+        };
+        // Layout blocks only while shown (a hidden 預覽 needn't load); tab panes always.
+        let mut out: Vec<_> = self.chrome.visible_blocks().into_iter().filter_map(page).collect();
+        for (id, url) in self.model.tabs().flat_map(|c| c.root.panes()).filter_map(page) {
+            if !out.iter().any(|(o, _)| *o == id) { out.push((id, url)); }
+        }
+        // A page made for a block that's hidden now is kept (its history too).
+        for id in self.webs.keys() {
+            if !out.iter().any(|(o, _)| o == id) && self.chrome.find(id).is_some() { out.push((id.clone(), String::new())); }
+        }
+        out
     }
 
     /// Makes a page for each new web pane and drops those whose pane is gone (from `sync`).
@@ -82,6 +93,7 @@ impl AppWindow {
             .with_new_window_req_handler(move |url, _| { let _ = on_open.try_send(WebEvent::Open(p3.clone(), url)); NewWindowResponse::Deny })
             .with_bounds(Rect::default())
             .build_as_child(&handle)?;
+        round_bottom(&view);
         Ok(view)
     }
 
@@ -120,8 +132,12 @@ impl AppWindow {
     }
 
     /// Hides the pages that mustn't show this frame (from `render`, before the tree is built).
-    pub(super) fn web_frame(&mut self) {
+    pub(super) fn web_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.web_frame_no += 1;
+        // A page shown since the last sync (預覽 picked in the right column) gets made now.
+        if self.web_panes().iter().any(|(id, _)| !self.webs.contains_key(id)) {
+            self.web_sync(window, cx);
+        }
         let cover = self.web_covered();
         for w in self.webs.values() {
             if (cover || w.drawn.get() + 1 < self.web_frame_no) && w.shown.get() {
@@ -190,6 +206,26 @@ impl AppWindow {
             _ => w.view.reload(),
         };
         r.map_err(|e| e.to_string())
+    }
+}
+
+/// The page sits in a pane with rounded corners, but it is a native view GPUI can't clip: round its
+/// own bottom corners (the top meets the toolbar). A layer's y grows upward, so the bottom is MinY.
+fn round_bottom(view: &wry::WebView) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use wry::WebViewExtMacOS;
+    let wk = view.webview();
+    unsafe {
+        let wk: &AnyObject = &*(objc2::rc::Retained::as_ptr(&wk) as *const AnyObject);
+        let _: () = msg_send![wk, setWantsLayer: true];
+        let layer: *mut AnyObject = msg_send![wk, layer];
+        if let Some(layer) = layer.as_ref() {
+            let _: () = msg_send![layer, setCornerRadius: 9.0f64];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+            // kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner
+            let _: () = msg_send![layer, setMaskedCorners: 3usize];
+        }
     }
 }
 
