@@ -163,7 +163,8 @@ impl AppWindow {
         let blur = w.view.clone();
         // A frame of the pane's own background round the page, so it never runs into the pane's border
         // or the toolbar's line (its corners are rounded natively, round_corners).
-        div().size_full().p(settings::z(6.)).child(
+        // The same line under the toolbar for a browser tab and for 預覽 (the toolbar draws none).
+        div().size_full().border_t(px(1.)).border_color(c("border")).p(settings::z(6.)).child(
             canvas(
                 move |bounds, _, _| {
                     let _ = view.set_bounds(Rect {

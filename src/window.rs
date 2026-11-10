@@ -4440,9 +4440,10 @@ impl AppWindow {
             self.dispatch("pane.close", &json!({ "pane": pane }), true, window, cx);
         }
         // SiaoDesk: a drawer squeezed shut folds away too.
+        self.drawer_hint = None;
         let drawers: Vec<String> = [index, index + 1].into_iter().filter_map(|i| shown.get(i))
             .filter(|c| is_drawer(&self.chrome, &c.id))
-            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < 64.0))
+            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < DRAWER_CLOSE_BELOW))
             .map(|c| c.id.clone()).collect();
         for id in drawers {
             self.dispatch("drawer.close", &json!({ "id": id }), true, window, cx);
@@ -4498,6 +4499,11 @@ impl AppWindow {
                 set(children, &b_id, Span::Weight { weight: sum * (total - new_a) / total });
             }
         }
+        // SiaoDesk: a drawer dragged this short closes when let go — its border turns to running dashes.
+        let short = [(a_id.as_str(), new_a), (b_id.as_str(), total - new_a)].into_iter()
+            .find(|(id, px)| is_drawer(&self.chrome, id) && *px < DRAWER_CLOSE_BELOW)
+            .map(|(id, _)| id.to_owned());
+        if short != self.drawer_hint { self.drawer_hint = short; }
     }
 
     fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -4798,6 +4804,9 @@ fn folder_info(cwd: &str, home: &str, on: Option<&str>) -> (model::FolderInfo, b
 fn is_drawer(chrome: &Node, id: &str) -> bool {
     id.starts_with("drawer-") && chrome.find(id).is_some_and(|n| n.terminal().is_some())
 }
+
+/// SiaoDesk: a drawer let go shorter than this closes (the same as SiaoDrawerDrag's CloseBelow).
+const DRAWER_CLOSE_BELOW: f32 = 120.0;
 
 static DRAWER_HINT_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
