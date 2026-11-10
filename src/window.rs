@@ -1160,7 +1160,8 @@ impl AppWindow {
         let mut terms = Vec::new();
         let mut mods = Vec::new();
         let visit = |n: &Node, terms: &mut Vec<(String, String)>, mods: &mut Vec<(String, Instance)>| match n.content() {
-            Some(Content::Terminal { terminal }) => terms.push((n.id.clone(), terminal.clone())),
+            // SiaoDesk: an empty address is a drawer with nothing running (see `drawer.open`).
+            Some(Content::Terminal { terminal }) if !terminal.is_empty() => terms.push((n.id.clone(), terminal.clone())),
             Some(Content::Mod { name, props }) => mods.push((n.id.clone(), Instance { name: name.clone(), props: props.clone() })),
             _ => {}
         };
@@ -2300,6 +2301,11 @@ impl AppWindow {
             let id = o.id.clone();
             return self.close_overlay(&id, window, cx);
         }
+        // SiaoDesk: a drawer stays in the layout; it just has nothing running and folds away.
+        if is_drawer(&self.chrome, block) {
+            self.drawer_empty(block);
+            return self.sync(window, cx);
+        }
         if self.chrome.find(block).is_some_and(|n| n.terminal().is_some()) {
             self.chrome.remove_slot(block);
             self.sync(window, cx);
@@ -3307,6 +3313,70 @@ impl AppWindow {
                     n.size = Some(Span::Weight { weight: w as f32 });
                 }
             }
+            // SiaoDesk: the bottom drawers, terminal blocks of the layout whose id starts with
+            // "drawer-" (under the left column, the right one, or both). Open starts a shell in the
+            // focused terminal's folder (unless one runs there) and slides the block up; close slides
+            // it down and ends the shell.
+            "drawer.open" => {
+                let id = Self::owned(a, "id").unwrap_or_default();
+                if !is_drawer(&self.chrome, &id) { return self.fail(format!("no drawer {id:?} in the shown layout")) }
+                let running = self.chrome.find(&id).and_then(Node::terminal).is_some_and(|t| !t.is_empty() && self.live.contains_key(t));
+                if !running {
+                    let from = self.model.focused_pane().and_then(|p| self.model.address_of(&p));
+                    let cwd = from.as_ref().and_then(|a| self.cwds.get(a).cloned())
+                        .or_else(|| self.model.active_space().map(|p| p.folder.clone())).unwrap_or_default();
+                    // No herdr.space label: nothing adopts it into a tab.
+                    let labels = json!({ "herdr.drawer": id });
+                    let display = crate::terminal::initial_display(window);
+                    let started = run_following_folder(cwd, true, None, |cwd| self.core.run(Vec::new(), cwd, labels.clone(), None, None, display.clone()));
+                    let (addr, cwd) = match started { Ok(r) => r, Err(e) => return self.fail(format!("cannot start a terminal: {e:#}")) };
+                    self.born.borrow_mut().insert(addr.clone(), Instant::now());
+                    if !cwd.is_empty() { self.cwds.insert(addr.clone(), cwd); }
+                    let core = self.core.clone();
+                    let kept = addr.clone();
+                    cx.background_executor().spawn(async move { let _ = core.call("terminal.keep", json!({"terminal": kept, "keep": true})); }).detach();
+                    if let Some(Node { kind: Kind::Block { content }, .. }) = self.chrome.find_mut(&id) {
+                        *content = Content::Terminal { terminal: addr.clone() };
+                    }
+                    self.reply = Some(json!({ "drawer": id, "terminal": addr }));
+                }
+                if let Some(px) = a.get("px").and_then(Value::as_f64)
+                    && let Some(n) = self.chrome.find_mut(&id)
+                {
+                    n.size = Some(Span::Px { px: px as f32 });
+                }
+                if self.chrome.find(&id).is_some_and(|n| n.hidden) {
+                    self.dispatch("layout.show", &json!({ "id": id }), person, window, cx);
+                }
+                self.model.focus_pane(&id);
+                self.focused_pane = Some(id.clone());
+            }
+            "drawer.close" => {
+                let id = Self::owned(a, "id").unwrap_or_default();
+                if !is_drawer(&self.chrome, &id) { return self.fail(format!("no drawer {id:?} in the shown layout")) }
+                let addr = self.chrome.find(&id).and_then(Node::terminal).filter(|t| !t.is_empty()).map(str::to_owned);
+                if self.chrome.find(&id).is_some_and(|n| !n.hidden) {
+                    self.dispatch("layout.hide", &json!({ "id": id }), person, window, cx);
+                }
+                if self.focused_pane.as_deref() == Some(id.as_str()) {
+                    self.focused_pane = None;
+                }
+                // The shell ends once the block has slid shut (its end then empties the block).
+                if let Some(addr) = addr {
+                    let id = id.clone();
+                    cx.spawn_in(window, async move |this, cx| {
+                        cx.background_executor().timer(crate::anim::DURATION).await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.kill(&[addr.clone()], cx);
+                            // Hidden by now, so its view is gone and won't report the end: empty it here.
+                            if this.chrome.find(&id).and_then(Node::terminal) == Some(addr.as_str()) {
+                                this.drawer_empty(&id);
+                                cx.notify();
+                            }
+                        });
+                    }).detach();
+                }
+            }
             "layout.reset" => {
                 let name = Self::owned(a, "name").unwrap_or_else(|| self.layout_name.clone());
                 let Some((_, text)) = LAYOUTS.iter().find(|(n, _)| *n == name) else {
@@ -4270,6 +4340,20 @@ impl AppWindow {
     }
 
     /// SiaoDesk: a pane dragged down to almost nothing by its divider closes (pull a terminal shut).
+    /// A drawer whose shell ended: no address, folded away (it stays in the layout).
+    fn drawer_empty(&mut self, id: &str) {
+        if let Some(n) = self.chrome.find_mut(id) {
+            if let Kind::Block { content } = &mut n.kind {
+                *content = Content::Terminal { terminal: String::new() };
+            }
+            n.hidden = true;
+        }
+        if self.focused_pane.as_deref() == Some(id) {
+            self.focused_pane = None;
+        }
+        self.save();
+    }
+
     fn close_squeezed(&mut self, container: &str, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(node) = self.find_node_mut(container).map(|n| n.clone()) else { return };
         let shown: Vec<&Node> = node.children().iter().filter(|c| !c.hidden).collect();
@@ -4282,6 +4366,14 @@ impl AppWindow {
             .collect();
         for pane in squeezed {
             self.dispatch("pane.close", &json!({ "pane": pane }), true, window, cx);
+        }
+        // SiaoDesk: a drawer squeezed shut folds away too.
+        let drawers: Vec<String> = [index, index + 1].into_iter().filter_map(|i| shown.get(i))
+            .filter(|c| is_drawer(&self.chrome, &c.id))
+            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < 64.0))
+            .map(|c| c.id.clone()).collect();
+        for id in drawers {
+            self.dispatch("drawer.close", &json!({ "id": id }), true, window, cx);
         }
     }
 
@@ -4628,6 +4720,11 @@ fn folder_info(cwd: &str, home: &str, on: Option<&str>) -> (model::FolderInfo, b
     let [top, head] = out.as_slice() else { return (none, true) };
     let branch = (head != "HEAD").then(|| head.clone());
     (model::FolderInfo { top: top.clone(), branch }, true)
+}
+
+/// SiaoDesk: a bottom drawer, a terminal block of the layout whose id starts with "drawer-".
+fn is_drawer(chrome: &Node, id: &str) -> bool {
+    id.starts_with("drawer-") && chrome.find(id).is_some_and(|n| n.terminal().is_some())
 }
 
 fn terminal_block<'a>(chrome: &'a Node, focused: Option<&str>) -> Option<&'a Node> {

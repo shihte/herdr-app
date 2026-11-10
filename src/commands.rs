@@ -77,6 +77,8 @@ pub const COMMANDS: &[Command] = &[
     cmd("layout.toggle", &[req("id")], "Hide or show a layout node."),
     cmd("layout.show", &[req("id")], "Show a layout node."),
     cmd("layout.hide", &[req("id")], "Hide a layout node."),
+    cmd("drawer.open", &[req("id"), opt("px")], "SiaoDesk: open a bottom drawer (a layout terminal block drawer-*), starting a shell in it."),
+    cmd("drawer.close", &[req("id")], "SiaoDesk: fold a bottom drawer away and end its shell."),
     cmd("layout.resize", &[req("id"), opt("px"), opt("weight"), opt("instant")], "Size a layout node (a pixel size glides there unless instant)."),
     cmd("layout.select", &[req("stack"), req("child")], "Show one child of a stack."),
     cmd("layout.reset", &[opt("name")], "Reset a shipped layout and its clicks (the old file is kept aside)."),
