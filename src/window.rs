@@ -3258,16 +3258,50 @@ impl AppWindow {
             "layout.toggle" | "layout.show" | "layout.hide" => {
                 let id = Self::arg(a, "id").unwrap_or_default();
                 let Some(n) = self.chrome.find_mut(id) else { return self.fail(format!("no node {id:?} in the shown layout")) };
-                n.hidden = match name {
+                let hide = match name {
                     "layout.toggle" => !n.hidden,
                     "layout.show" => false,
                     _ => true,
                 };
+                // SiaoDesk: a pixel-sized node grows from 0 / shrinks to 0 (src/anim.rs); it is only
+                // marked hidden once it has shrunk, unless something showed it again meanwhile.
+                match (n.size, hide, n.hidden) {
+                    (Some(Span::Px { px }), false, true) => {
+                        crate::anim::start(id, 0.0, px);
+                        n.hidden = false;
+                    }
+                    (Some(Span::Px { px }), true, false) => {
+                        let generation = crate::anim::start(id, px, 0.0);
+                        let id = id.to_owned();
+                        cx.spawn_in(window, async move |this, cx| {
+                            cx.background_executor().timer(crate::anim::DURATION).await;
+                            let _ = this.update(cx, |this, cx| {
+                                if crate::anim::generation(&id) != generation {
+                                    return;
+                                }
+                                if let Some(n) = this.chrome.find_mut(&id) {
+                                    n.hidden = true;
+                                }
+                                this.save();
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
+                    _ => n.hidden = hide,
+                }
             }
             "layout.resize" => {
                 let id = Self::arg(a, "id").unwrap_or_default();
                 let Some(n) = self.find_node_mut(id) else { return self.fail(format!("no node {id:?}")) };
                 if let Some(px) = a.get("px").and_then(Value::as_f64) {
+                    // `instant: true` (a drag following the pointer) skips the glide.
+                    if let Some(Span::Px { px: old }) = n.size
+                        && (old - px as f32).abs() > 0.5
+                        && a.get("instant").and_then(Value::as_bool) != Some(true)
+                    {
+                        crate::anim::start(id, old, px as f32);
+                    }
                     n.size = Some(Span::Px { px: px as f32 });
                 } else if let Some(w) = a.get("weight").and_then(Value::as_f64) {
                     n.size = Some(Span::Weight { weight: w as f32 });
@@ -4737,10 +4771,17 @@ fn dock(root: &mut Node, block: Node, place: &str, wrapper_id: String) {
 fn sized(slot: Div, n: &Node, axis: Axis, total_weight: f32) -> Div {
     let mut slot = slot;
     let row = axis == Axis::Row;
+    // SiaoDesk: while a node glides (src/anim.rs) it takes the in-between size, clips, and skips its
+    // min / max (a hide shrinks it below its minimum).
+    let gliding = crate::anim::current(&n.id);
     match n.size {
         Some(Span::Px { px: v }) => {
+            let v = gliding.unwrap_or(v);
             slot = slot.flex_none();
             slot = if row { slot.w(settings::z(v)).h_full() } else { slot.h(settings::z(v)).w_full() };
+            if gliding.is_some() {
+                return slot.overflow_hidden();
+            }
         }
         _ => {
             let w = pane_size::weight(n);
@@ -4834,6 +4875,9 @@ impl Render for AppWindow {
         let _timed = crate::bench::timed(&crate::bench::WINDOW_US);
         crate::bench::frame_start();
         crate::terminal::next_frame();
+        if crate::anim::take_busy() {
+            window.request_animation_frame();
+        }
         window.set_rem_size(px(settings::ui_font_size()));
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
