@@ -7,6 +7,7 @@
 use crate::hc::Core;
 mod floats;
 mod movable;
+mod web;
 mod pane_drag;
 mod pane_size;
 mod titlebar;
@@ -360,6 +361,12 @@ pub struct AppWindow {
     swapped: HashMap<String, String>,
     float_drag: Option<floats::FloatDrag>,
     pane_drag: Option<pane_drag::PaneDrag>,
+    /// SiaoDesk: 預覽 panes' native pages (`web.rs`).
+    webs: HashMap<String, web::Web>,
+    /// SiaoDesk: the drawer that letting go would close (`drawer.hint`): dashes run round its edge.
+    drawer_hint: Option<String>,
+    web_tx: Option<async_channel::Sender<web::WebEvent>>,
+    web_frame_no: u64,
     pane_grip_hover: Option<String>,
     /// Each pane's top row the grip sits centered in: its top header, else a strip.
     pane_grip_rows: RefCell<HashMap<String, f32>>,
@@ -478,6 +485,10 @@ impl AppWindow {
             swapped: HashMap::new(),
             float_drag: None,
             pane_drag: None,
+            webs: HashMap::new(),
+            drawer_hint: None,
+            web_tx: None,
+            web_frame_no: 0,
             pane_grip_hover: None,
             pane_grip_rows: RefCell::default(),
             win_drag: None,
@@ -1388,6 +1399,7 @@ impl AppWindow {
     /// Creates what's visible, drops what isn't, publishes state, saves, focuses.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model.order_spaces();
+        self.web_sync(window, cx);
         let (model, live) = (&self.model, &self.live);
         self.swapped.retain(|p, a| model.address_of(p).is_some() && live.contains_key(a));
         let (mut terms, mods_visible) = self.visible();
@@ -1718,8 +1730,8 @@ impl AppWindow {
                     let focused = m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str());
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
-                    if let Some(Content::Mod { name, .. }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                    if let Some(Content::Mod { name, props }) = p.content() {
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "props": props, "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -3317,6 +3329,9 @@ impl AppWindow {
             // "drawer-" (under the left column, the right one, or both). Open starts a shell in the
             // focused terminal's folder (unless one runs there) and slides the block up; close slides
             // it down and ends the shell.
+            "web.open" | "web.back" | "web.forward" | "web.reload" => {
+                if let Err(e) = self.web_command(name, a) { return self.fail(e) }
+            }
             "drawer.open" => {
                 let id = Self::owned(a, "id").unwrap_or_default();
                 if !is_drawer(&self.chrome, &id) { return self.fail(format!("no drawer {id:?} in the shown layout")) }
@@ -3350,6 +3365,10 @@ impl AppWindow {
                 }
                 self.model.focus_pane(&id);
                 self.focused_pane = Some(id.clone());
+            }
+            "drawer.hint" => {
+                let id = Self::owned(a, "id").filter(|id| a.get("on").and_then(Value::as_bool) != Some(false));
+                if id != self.drawer_hint { self.drawer_hint = id; }
             }
             "drawer.close" => {
                 let id = Self::owned(a, "id").unwrap_or_default();
@@ -4169,7 +4188,7 @@ impl AppWindow {
             }
         };
         let row = frame.and_then(|f| f.header.as_ref()).filter(|h| !h.bottom() && !h.hover()).map(pane_size::header_height);
-        el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).into_any_element()
+        el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).children(self.drawer_hint_el(&n.id)).into_any_element()
     }
 
     fn render_block(&self, n: &Node, content: &Content, focused: &HashSet<String>, cx: &mut Context<Self>) -> AnyElement {
@@ -4197,6 +4216,7 @@ impl AppWindow {
                 }
                 None => div().into_any_element(),
             },
+            Content::Mod { name, .. } if name == web::MOD => self.render_web(&n.id),
             Content::Mod { .. } => self.render_slot(&n.id, cx),
             Content::Agent { .. } => match self.shown_agent() {
                 Some(addr) => match self.agent_view(&n.id, &addr) {
@@ -4340,6 +4360,40 @@ impl AppWindow {
     }
 
     /// SiaoDesk: a pane dragged down to almost nothing by its divider closes (pull a terminal shut).
+    /// The running dashes round the drawer `drawer.hint` names: a 2 px dashed outline whose dashes
+    /// travel along the edge (the start point moves round it), redrawn every frame while it shows.
+    fn drawer_hint_el(&self, id: &str) -> Option<AnyElement> {
+        if self.drawer_hint.as_deref() != Some(id) { return None; }
+        let start = *DRAWER_HINT_EPOCH.get_or_init(Instant::now);
+        let color = c("blocked");
+        Some(canvas(|_, _, _| {}, move |b, _, window, _| {
+            let inset = px(1.5);
+            let (l, t) = (b.origin.x + inset, b.origin.y + inset);
+            let (r, btm) = (b.right() - inset, b.bottom() - inset);
+            let (w, h) = (f32::from(r - l), f32::from(btm - t));
+            if w < 4.0 || h < 4.0 { return; }
+            // Corners in order round the edge; begin `shift` px along it and go once round.
+            let per = 2.0 * (w + h);
+            let shift = (start.elapsed().as_secs_f32() * 40.0) % 14.0;
+            let at = |d: f32| -> Point<Pixels> {
+                let d = d.rem_euclid(per);
+                if d < w { point(l + px(d), t) }
+                else if d < w + h { point(r, t + px(d - w)) }
+                else if d < 2.0 * w + h { point(r - px(d - w - h), btm) }
+                else { point(l, btm - px(d - 2.0 * w - h)) }
+            };
+            let mut path = PathBuilder::stroke(px(2.)).dash_array(&[px(8.), px(6.)]);
+            path.move_to(at(shift));
+            for corner in [w, w + h, 2.0 * w + h, per] {
+                let d = if corner > shift { corner } else { corner + per };
+                path.line_to(at(d));
+            }
+            path.line_to(at(shift + per));
+            if let Ok(p) = path.build() { window.paint_path(p, color); }
+            window.request_animation_frame();
+        }).absolute().size_full().into_any_element())
+    }
+
     /// A drawer whose shell ended: no address, folded away (it stays in the layout).
     fn drawer_empty(&mut self, id: &str) {
         if let Some(n) = self.chrome.find_mut(id) {
@@ -4727,6 +4781,8 @@ fn is_drawer(chrome: &Node, id: &str) -> bool {
     id.starts_with("drawer-") && chrome.find(id).is_some_and(|n| n.terminal().is_some())
 }
 
+static DRAWER_HINT_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
 fn terminal_block<'a>(chrome: &'a Node, focused: Option<&str>) -> Option<&'a Node> {
     let id = focused?;
     chrome.visible_blocks().into_iter().find(|n| n.id == id && n.terminal().is_some())
@@ -4991,6 +5047,7 @@ impl Render for AppWindow {
         if crate::anim::take_busy() {
             window.request_animation_frame();
         }
+        self.web_frame();
         window.set_rem_size(px(settings::ui_font_size()));
         // A terminal the person clicked into becomes the focused pane.
         let clicked = self
