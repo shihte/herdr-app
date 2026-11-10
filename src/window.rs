@@ -4269,6 +4269,22 @@ impl AppWindow {
         sep.into_any_element()
     }
 
+    /// SiaoDesk: a pane dragged down to almost nothing by its divider closes (pull a terminal shut).
+    fn close_squeezed(&mut self, container: &str, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(node) = self.find_node_mut(container).map(|n| n.clone()) else { return };
+        let shown: Vec<&Node> = node.children().iter().filter(|c| !c.hidden).collect();
+        let squeezed: Vec<String> = [index, index + 1]
+            .into_iter()
+            .filter_map(|i| shown.get(i))
+            .filter(|c| c.is_pane() && self.model.tab_of(&c.id).is_some())
+            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < 64.0))
+            .map(|c| c.id.clone())
+            .collect();
+        for pane in squeezed {
+            self.dispatch("pane.close", &json!({ "pane": pane }), true, window, cx);
+        }
+    }
+
     fn drag_to(&mut self, pos: Point<Pixels>) {
         let Some(d) = &self.drag else { return };
         let (container, index, axis) = (d.container.clone(), d.index, d.axis);
@@ -4979,7 +4995,8 @@ impl Render for AppWindow {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_from = None;
-                if this.drag.take().is_some() {
+                if let Some(d) = this.drag.take() {
+                    this.close_squeezed(&d.container, d.index, window, cx);
                     this.save();
                     // Mods see the new sizes (the sidebar picks its rail by width).
                     this.publish(cx);
