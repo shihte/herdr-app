@@ -54,6 +54,12 @@ pub fn current(id: &str) -> Option<f32> {
     })
 }
 
+/// Whether some glide is still under way. Terminals keep their size meanwhile and fit once it ends:
+/// resizing one every frame makes the program in it redraw its whole screen each time (it stutters).
+pub fn gliding() -> bool {
+    GLIDES.with(|g| g.borrow().values().any(|glide| glide.start.elapsed() < DURATION))
+}
+
 /// Whether anything glided during the last frame (then the next frame should come right away).
 pub fn take_busy() -> bool {
     BUSY.with(|b| b.replace(false))

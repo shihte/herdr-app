@@ -197,6 +197,10 @@ impl Grid {
         if (cols, rows) == (self.vt.cols, self.vt.rows) && dev == self.vt_cell {
             return;
         }
+        // SiaoDesk: not while the layout glides (src/anim.rs); the frame after it ends fits for real.
+        if crate::anim::gliding() && self.vt.cols > 0 && self.vt.rows > 0 {
+            return;
+        }
         self.vt.resize(cols, rows, dev.0, dev.1);
         self.vt_cell = dev;
         if let Some(chan) = self.channel {
