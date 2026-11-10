@@ -179,6 +179,25 @@ pub(crate) unsafe fn platform_input_from_native(
 
         match event_type {
             NSEventType::NSFlagsChanged => {
+                // SiaoDesk: pressing the second Command key while the other is held (left + right ⌘)
+                // is sent as the key "cmd-f20", so it can be bound like any shortcut. The Command
+                // modifier was already reported when the first one went down, so nothing is lost.
+                // NX_DEVICELCMDKEYMASK 0x08, NX_DEVICERCMDKEYMASK 0x10; key codes 55 left, 54 right.
+                let bits = native_event.modifierFlags().bits();
+                let code = native_event.keyCode();
+                if (code == 54 || code == 55) && bits & 0x18 == 0x18 {
+                    return Some(PlatformInput::KeyDown(KeyDownEvent {
+                        keystroke: Keystroke {
+                            modifiers: read_modifiers(native_event),
+                            key: "f20".into(),
+                            key_char: None,
+                            unshifted_key: None,
+                            option_side: None,
+                        },
+                        is_held: false,
+                        prefer_character_input: false,
+                    }));
+                }
                 Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
                     modifiers: read_modifiers(native_event),
                     capslock: Capslock {
