@@ -4,6 +4,7 @@ mod canvas;
 mod container_query;
 mod deferred;
 mod div;
+pub mod i18n;
 mod image_cache;
 mod img;
 mod list;

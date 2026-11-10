@@ -271,7 +271,7 @@ impl Element for &'static str {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut state = TextLayout::default();
-        let layout_id = state.layout(SharedString::from(*self), None, window, cx);
+        let layout_id = state.layout(super::i18n::tr_static(self), None, window, cx);
         (layout_id, state)
     }
 
@@ -284,7 +284,7 @@ impl Element for &'static str {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        text_layout.prepaint(bounds, &super::i18n::tr_static(self))
     }
 
     fn paint(
@@ -297,7 +297,7 @@ impl Element for &'static str {
         window: &mut Window,
         cx: &mut App,
     ) {
-        text_layout.paint(self, window, cx)
+        text_layout.paint(&super::i18n::tr_static(self), window, cx)
     }
 }
 
@@ -345,7 +345,7 @@ impl Element for SharedString {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut state = TextLayout::default();
-        let layout_id = state.layout(self.clone(), None, window, cx);
+        let layout_id = state.layout(super::i18n::tr(self), None, window, cx);
         (layout_id, state)
     }
 
@@ -358,7 +358,7 @@ impl Element for SharedString {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self.as_ref())
+        text_layout.prepaint(bounds, &super::i18n::tr(self))
     }
 
     fn paint(
@@ -371,7 +371,7 @@ impl Element for SharedString {
         window: &mut Window,
         cx: &mut App,
     ) {
-        text_layout.paint(self.as_ref(), window, cx)
+        text_layout.paint(&super::i18n::tr(self), window, cx)
     }
 }
 

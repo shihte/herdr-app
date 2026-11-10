@@ -904,7 +904,8 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Set placeholder
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
-        self.placeholder = placeholder.into();
+        // SiaoDesk: placeholders follow the interface language too.
+        self.placeholder = gpui::i18n::tr(&placeholder.into());
         self
     }
 
@@ -994,7 +995,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.placeholder = placeholder.into();
+        self.placeholder = gpui::i18n::tr(&placeholder.into());
         cx.notify();
     }
 
