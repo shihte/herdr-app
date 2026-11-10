@@ -1612,10 +1612,16 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
             images.push((below, Bounds::new(pos, size(px(width), px(height))), img.clone()));
         }
     }
-    g.images.retain(|k, _| keep.contains(k));
+    // Images no longer on screen leave the GPU atlas too: dropping our Arc alone leaves the texture
+    // there, so a program that redraws a picture (a live preview) grew memory by one frame each time.
+    let mut gone = Vec::new();
+    g.images.retain(|k, img| keep.contains(k) || { gone.push(img.clone()); false });
     let link_spans = g.link_spans.clone();
     let marked = g.marked.clone();
     drop(g);
+    for img in gone {
+        let _ = window.drop_image(img);
+    }
 
     window.paint_quad(fill(bounds, hsla(frame.bg).opacity(crate::settings::get().terminal_opacity)));
     let at = |x: usize, y: usize| origin + point(cell.width * x as f32, cell.height * y as f32);
