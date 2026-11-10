@@ -4115,7 +4115,9 @@ impl AppWindow {
         el = shadow(el, f.shadow.as_deref());
         let body = div().flex_1().min_h_0().flex().child(inner);
         let Some(h) = &f.header else { return el.child(body).into_any_element() };
-        let head = div().flex_none().h(settings::z(pane_size::header_height(h))).w_full().flex()
+        // SiaoDesk: a browser tab's header is its toolbar, as tall as 預覽's (40) so both breathe alike.
+        let height = if matches!(n.content(), Some(Content::Mod { name, .. }) if name == web::MOD) { 40.0 } else { pane_size::header_height(h) };
+        let head = div().flex_none().h(settings::z(height)).w_full().flex()
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if h.hover() {
             let head = head.absolute().left_0().right_0().opacity(0.).group_hover(group, |s| s.opacity(1.));
@@ -4347,7 +4349,13 @@ impl AppWindow {
             }
             sep = sep.child(separator_line(row, w, color, top));
         }
-        if n.resizable() {
+        // SiaoDesk: a block marked `"resizable": false` (the usage strip, the tab bar…) keeps its size:
+        // the dividers on either side of it don't move.
+        let fixed = {
+            let shown: Vec<&Node> = n.children().iter().filter(|c| !c.hidden).collect();
+            [index, index + 1].iter().any(|i| shown.get(*i).is_some_and(|c| c.resizable == Some(false)))
+        };
+        if n.resizable() && !fixed {
             let container = n.id.clone();
             let hit = HANDLE.max(width);
             sep = sep.child(
@@ -4443,7 +4451,7 @@ impl AppWindow {
         self.drawer_hint = None;
         let drawers: Vec<String> = [index, index + 1].into_iter().filter_map(|i| shown.get(i))
             .filter(|c| is_drawer(&self.chrome, &c.id))
-            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < DRAWER_CLOSE_BELOW))
+            .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < drawer_close_below()))
             .map(|c| c.id.clone()).collect();
         for id in drawers {
             self.dispatch("drawer.close", &json!({ "id": id }), true, window, cx);
@@ -4501,7 +4509,7 @@ impl AppWindow {
         }
         // SiaoDesk: a drawer dragged this short closes when let go — its border turns to running dashes.
         let short = [(a_id.as_str(), new_a), (b_id.as_str(), total - new_a)].into_iter()
-            .find(|(id, px)| is_drawer(&self.chrome, id) && *px < DRAWER_CLOSE_BELOW)
+            .find(|(id, px)| is_drawer(&self.chrome, id) && *px < drawer_close_below())
             .map(|(id, _)| id.to_owned());
         if short != self.drawer_hint { self.drawer_hint = short; }
     }
@@ -4805,8 +4813,11 @@ fn is_drawer(chrome: &Node, id: &str) -> bool {
     id.starts_with("drawer-") && chrome.find(id).is_some_and(|n| n.terminal().is_some())
 }
 
-/// SiaoDesk: a drawer let go shorter than this closes (the same as SiaoDrawerDrag's CloseBelow).
-const DRAWER_CLOSE_BELOW: f32 = 120.0;
+/// SiaoDesk: a drawer let go shorter than this closes — 設定 → SiaoDesk (shared "siao.settings"
+/// drawerCloseBelow, as SiaoDrawerDrag reads it), 120 px unless changed.
+fn drawer_close_below() -> f32 {
+    mods::shared("siao.settings").and_then(|s| s.get("drawerCloseBelow").and_then(Value::as_f64)).map_or(120.0, |v| v as f32)
+}
 
 static DRAWER_HINT_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 

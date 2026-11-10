@@ -2,12 +2,14 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, window } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, window } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
 const SECTIONS = [
   { id: "look", title: "Look", icon: "palette" },
+  // SiaoDesk: what the Siao mods let you change (shared "siao.settings"; the mods read it live).
+  { id: "siao", title: "SiaoDesk", icon: "palette" },
   ...(window()?.platform === "macos" ? [{ id: "keyboard", title: "Keyboard", icon: "keyboard" }] : []),
   { id: "machines", title: "Machines", icon: "server" },
   { id: "alerts", title: "Alerts", icon: "bell" },
@@ -34,6 +36,8 @@ export default class Settings extends View {
     this.filter = "";
     this.fontInput = InputState.new({ placeholder: "Type to search fonts" });
     this.fontInput.on("change", (_e, cx) => { this.filter = this.fontInput.value(); cx.notify(); });
+    this.siaoHome = InputState.new({ value: (shared("siao.settings") ?? {}).home ?? "https://siao.ai", placeholder: "https://siao.ai" });
+    this.siaoHome.on("change", (_e, cx) => { this.siaoSet({ home: this.siaoHome.value().trim() || "https://siao.ai" }); cx.notify(); });
     this.renameInput = InputState.new();
     this.renameInput.on("focus", (_e, cx) => { this.renameFocused = true; cx.notify(); });
     this.renameInput.on("blur", (_e, cx) => { this.renameFocused = false; cx.notify(); });
@@ -691,6 +695,38 @@ export default class Settings extends View {
       .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Want your own sounds? Ask your agent to set sounds.done and sounds.blocked in settings.json to an MP3."));
   }
 
+  // SiaoDesk -------------------------------------------------------------
+
+  siaoSet(change) { setShared("siao.settings", { ...(shared("siao.settings") ?? {}), ...change }); }
+
+  siao(t) {
+    const S = shared("siao.settings") ?? {};
+    const get = (k, d) => S[k] ?? d;
+    const step = (k, d, by, min, max, unit = "") => this.stepper(t, `st-siao-${k}`, `${get(k, d)}${unit}`,
+      (_e, cx) => { this.siaoSet({ [k]: Math.max(min, get(k, d) - by) }); cx.notify(); },
+      (_e, cx) => { this.siaoSet({ [k]: Math.min(max, get(k, d) + by) }); cx.notify(); });
+    const flip = (k, d) => this.toggle(t, `st-siao-${k}`, get(k, d), (_e, cx) => { this.siaoSet({ [k]: !get(k, d) }); cx.notify(); });
+    return v_flex()
+      .w_full()
+      .child(this.heading(t, "瀏覽器"))
+      .child(this.row(t, "首頁", "預覽和＋開的瀏覽器分頁一開始打開的網址。",
+        div().w(240).h(30).px(8).rounded(7).border_1().border_color(t.border).bg(t.raised).flex().items_center()
+          .child(Input.new(this.siaoHome).w_full().text_size(13).text_color(t.foreground))))
+      .child(this.heading(t, "底部終端機抽屜"))
+      .child(this.row(t, "點一下打開的高度", "點白點（不拖）時抽屜打開的高度。", step("drawerHeight", 260, 20, 120, 800, " px")))
+      .child(this.row(t, "放開就關閉的高度", "拖到比這矮再放開就關閉（同時出現跑動虛線）。", step("drawerCloseBelow", 120, 10, 40, 300, " px")))
+      .child(this.row(t, "縫隙收起延遲", "滑鼠離開用量列上方的縫之後多久收起。", step("slitDelay", 700, 100, 200, 3000, " ms")))
+      .child(this.heading(t, "分頁"))
+      .child(this.row(t, "資料夾群組", "同時開著兩個以上資料夾的分頁時，用彩色標籤分組。", flip("groups", true)))
+      .child(this.row(t, "群組收合動畫", "點群組標籤收起／展開分頁時滑動。", flip("tabAnim", true)))
+      .child(this.heading(t, "代理"))
+      .child(this.row(t, "顯示子代理", "Claude Code 開出的子代理（Agent/Task）列在它的代理下面。", flip("subagents", true)))
+      .child(this.heading(t, "用量"))
+      .child(this.row(t, "5 小時警示", "5 小時用量超過這個百分比時變紅並通知一次。", step("quota5h", 70, 5, 10, 100, "%")))
+      .child(this.row(t, "今日警示", "今天用掉的本週額度超過這個百分比時變紅並通知一次。", step("quotaToday", 10, 1, 1, 100, "%")))
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("改了立刻生效。版面（區塊大小、顏色）在 layouts/Siao.json，快捷鍵在 keys.json。"));
+  }
+
   // Updates --------------------------------------------------------------
 
   updates(t) {
@@ -903,6 +939,8 @@ export default class Settings extends View {
                   .child(
                     this.section === "look"
                       ? this.look(t, cx)
+                      : this.section === "siao"
+                        ? this.siao(t)
                       : this.section === "keyboard"
                         ? this.keyboard(t)
                       : this.section === "machines"

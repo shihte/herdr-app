@@ -5,8 +5,8 @@
 //! page so the toolbar can show the address. Commands: `web.open {pane?, url}`, `web.back`, `web.forward`, `web.reload`.
 //!
 //! The page is a native view above the window's own drawing, so it covers whatever GPUI draws in its
-//! place. While a dialog, popup, menu or full-window overlay is up (the quick guide, the drawer drag), or
-//! a divider is being dragged, every page is hidden; so is a page whose pane wasn't drawn last frame
+//! place. While a dialog, popup, menu or full-window overlay is up (the quick guide, the drawer drag),
+//! every page is hidden; so is a page whose pane wasn't drawn last frame
 //! (another tab, a zoomed neighbour).
 
 use super::*;
@@ -16,6 +16,11 @@ use wry::{NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder, dpi};
 
 pub const MOD: &str = "SiaoWeb";
 const HOME: &str = "https://siao.ai";
+
+/// The home page from 設定 → SiaoDesk (shared "siao.settings" home).
+fn home() -> String {
+    mods::shared("siao.settings").and_then(|s| s.get("home").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(|| HOME.to_owned())
+}
 
 pub struct Web {
     view: Rc<wry::WebView>,
@@ -36,7 +41,7 @@ impl AppWindow {
     fn web_panes(&self) -> Vec<(String, String)> {
         let page = |p: &Node| match p.content() {
             Some(Content::Mod { name, props }) if name == MOD => {
-                Some((p.id.clone(), props.get("url").and_then(Value::as_str).unwrap_or(HOME).to_owned()))
+                Some((p.id.clone(), props.get("url").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(home)))
             }
             _ => None,
         };
@@ -148,7 +153,8 @@ impl AppWindow {
     }
 
     fn web_covered(&self) -> bool {
-        self.overlays.iter().any(|o| !matches!(o.kind, OverlayKind::Toast)) || self.drag.is_some()
+        // Resizing (a divider dragged, a glide) never hides it: it follows its box every frame.
+        self.overlays.iter().any(|o| !matches!(o.kind, OverlayKind::Toast))
     }
 
     /// The page in pane `id`'s place: a measured box the native view is moved onto.
