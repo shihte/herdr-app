@@ -6,7 +6,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-pub const DURATION: Duration = Duration::from_millis(200);
+/// 設定 → SiaoDesk 版面動畫時間 (shared "siao.settings" animMs), 200 ms unless changed; 0 turns glides off.
+pub fn duration() -> Duration {
+    let ms = crate::mods::shared("siao.settings").and_then(|s| s.get("animMs").and_then(serde_json::Value::as_u64)).unwrap_or(200);
+    Duration::from_millis(ms.min(2000))
+}
 
 struct Glide {
     from: f32,
@@ -17,11 +21,13 @@ struct Glide {
     start: Option<Instant>,
     /// When the command asked for it: a node that is never drawn still ends its glide on time.
     made: Instant,
+    dur: Duration,
 }
 
 impl Glide {
     fn t(&self) -> f32 {
-        (self.start.unwrap_or(self.made).elapsed().as_secs_f32() / DURATION.as_secs_f32()).min(1.0)
+        if self.dur.is_zero() { return 1.0; }
+        (self.start.unwrap_or(self.made).elapsed().as_secs_f32() / self.dur.as_secs_f32()).min(1.0)
     }
 }
 
@@ -29,13 +35,25 @@ thread_local! {
     static GLIDES: RefCell<HashMap<String, Glide>> = RefCell::new(HashMap::new());
     static GENERATION: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
     static BUSY: Cell<bool> = const { Cell::new(false) };
+    static HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A drawer is being dragged (its divider, or the slit's grips): terminals keep their size until it is
+/// let go. Each resize makes the shell redraw its prompt, and a prompt of several lines (starship's)
+/// leaves blank lines behind each time, so a drag up and down piled them up.
+pub fn hold(on: bool) {
+    HELD.with(|h| h.set(on));
+}
+
+pub fn held() -> bool {
+    HELD.with(|h| h.get())
 }
 
 /// Starts (or restarts, from where it is now) a glide of node `id`; returns its generation, so a
 /// delayed step (hiding at the end) can tell whether a newer glide replaced it.
 pub fn start(id: &str, from: f32, to: f32) -> u64 {
     let from = current(id).unwrap_or(from);
-    GLIDES.with(|g| g.borrow_mut().insert(id.to_owned(), Glide { from, to, start: None, made: Instant::now() }));
+    GLIDES.with(|g| g.borrow_mut().insert(id.to_owned(), Glide { from, to, start: None, made: Instant::now(), dur: duration() }));
     BUSY.with(|b| b.set(true));
     GENERATION.with(|g| {
         let mut g = g.borrow_mut();
@@ -56,7 +74,7 @@ pub fn current(id: &str) -> Option<f32> {
         let glide = g.get_mut(id)?;
         if glide.start.is_none() {
             // Late by more than a few frames: the glide still plays whole, from now.
-            glide.start = Some(if glide.made.elapsed() < DURATION { Instant::now() } else { glide.made });
+            glide.start = Some(if glide.made.elapsed() < glide.dur { Instant::now() } else { glide.made });
         }
         let t = glide.t();
         if t >= 1.0 {

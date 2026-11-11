@@ -367,6 +367,8 @@ pub struct AppWindow {
     drawer_hint: Option<String>,
     web_tx: Option<async_channel::Sender<web::WebEvent>>,
     web_frame_no: u64,
+    /// SiaoDesk: what covers the pages this frame (overlay boxes, a dialog's dimming), web.rs.
+    web_holes: Rc<RefCell<(Vec<Bounds<Pixels>>, bool)>>,
     pane_grip_hover: Option<String>,
     /// Each pane's top row the grip sits centered in: its top header, else a strip.
     pane_grip_rows: RefCell<HashMap<String, f32>>,
@@ -489,6 +491,7 @@ impl AppWindow {
             drawer_hint: None,
             web_tx: None,
             web_frame_no: 0,
+            web_holes: Default::default(),
             pane_grip_hover: None,
             pane_grip_rows: RefCell::default(),
             win_drag: None,
@@ -3293,7 +3296,7 @@ impl AppWindow {
                         let id = id.to_owned();
                         cx.spawn_in(window, async move |this, cx| {
                             // Until it has really shrunk on screen (its clock starts at its first frame).
-                            cx.background_executor().timer(crate::anim::DURATION).await;
+                            cx.background_executor().timer(crate::anim::duration()).await;
                             for _ in 0..60 {
                                 if !crate::anim::active(&id) { break; }
                                 cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
@@ -3348,7 +3351,8 @@ impl AppWindow {
                     // No herdr.space label: nothing adopts it into a tab.
                     let labels = json!({ "herdr.drawer": id });
                     let display = crate::terminal::initial_display(window);
-                    let started = run_following_folder(cwd, true, None, |cwd| self.core.run(Vec::new(), cwd, labels.clone(), None, None, display.clone()));
+                    let grid = self.drawer_grid(&id, a.get("px").and_then(Value::as_f64).map(|v| v as f32), window);
+                    let started = run_following_folder(cwd, true, None, |cwd| self.core.run(Vec::new(), cwd, labels.clone(), None, grid, display.clone()));
                     let (addr, cwd) = match started { Ok(r) => r, Err(e) => return self.fail(format!("cannot start a terminal: {e:#}")) };
                     self.born.borrow_mut().insert(addr.clone(), Instant::now());
                     if !cwd.is_empty() { self.cwds.insert(addr.clone(), cwd); }
@@ -3389,7 +3393,7 @@ impl AppWindow {
                 if let Some(addr) = addr {
                     let id = id.clone();
                     cx.spawn_in(window, async move |this, cx| {
-                        cx.background_executor().timer(crate::anim::DURATION).await;
+                        cx.background_executor().timer(crate::anim::duration()).await;
                         let _ = this.update(cx, |this, cx| {
                             this.kill(&[addr.clone()], cx);
                             // Hidden by now, so its view is gone and won't report the end: empty it here.
@@ -3793,6 +3797,7 @@ impl AppWindow {
                 self.win_drag = None;
             }
             self.bounds.borrow_mut().remove(&o.slot);
+            self.bounds.borrow_mut().remove(&format!("box:{}", o.id));
             self.remove_copy(&o.slot, window, cx);
             if o.layout.is_some() {
                 self.sync(window, cx);
@@ -4554,6 +4559,11 @@ impl AppWindow {
                 .occlude()
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content);
+            // SiaoDesk: its box, so a page under it is cut away only there (web.rs).
+            let body = if o.kind == OverlayKind::Window || o.kind == OverlayKind::Toast { body } else {
+                let (map, key) = (self.bounds.clone(), format!("box:{}", o.id));
+                body.relative().child(canvas(move |b, _, _| { map.borrow_mut().insert(key, b); }, |_, _, _, _| {}).absolute().size_full())
+            };
             match o.kind {
                 OverlayKind::Window => out.push(self.render_window(o, body, viewport, cx)),
                 OverlayKind::Dialog => out.push(
@@ -4814,6 +4824,31 @@ fn folder_info(cwd: &str, home: &str, on: Option<&str>) -> (model::FolderInfo, b
 }
 
 /// SiaoDesk: a bottom drawer, a terminal block of the layout whose id starts with "drawer-".
+impl AppWindow {
+    /// A drawer's divider is held, or the slit's grips are pulling one (SiaoDrawerDrag sets shared
+    /// "siao.drawer.dragging").
+    fn drawer_dragged(&self) -> bool {
+        if mods::shared("siao.drawer.dragging").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        let Some(d) = &self.drag else { return false };
+        let Some(Kind::Row { children } | Kind::Column { children }) = self.chrome.find(&d.container).map(|n| &n.kind) else { return false };
+        let shown: Vec<&Node> = children.iter().filter(|c| !c.hidden).collect();
+        [d.index, d.index + 1].iter().filter_map(|i| shown.get(*i)).any(|n| is_drawer(&self.chrome, &n.id))
+    }
+
+    /// The grid a drawer's shell starts at: as big as the drawer will be once open, so it isn't
+    /// resized (and doesn't redraw its prompt) right after it starts.
+    fn drawer_grid(&self, id: &str, want: Option<f32>, window: &Window) -> Option<(u16, u16)> {
+        let n = self.chrome.find(id)?;
+        let h = want.or(match n.size { Some(Span::Px { px }) => Some(px), _ => None })?;
+        let w = self.bounds.borrow().get(&self.chrome.parent_of(id)?.id)?.size.width;
+        let border = px(2.0);
+        let size = gpui::size(w - border, settings::z(h) - border);
+        Some(crate::terminal::grid_size(size, crate::terminal::cell_size(window)))
+    }
+}
+
 fn is_drawer(chrome: &Node, id: &str) -> bool {
     id.starts_with("drawer-") && chrome.find(id).is_some_and(|n| n.terminal().is_some())
 }
@@ -5090,6 +5125,7 @@ impl Render for AppWindow {
         if crate::anim::take_busy() {
             window.request_animation_frame();
         }
+        crate::anim::hold(self.drawer_dragged());
         self.web_frame(window, cx);
         window.set_rem_size(px(settings::ui_font_size()));
         // A terminal the person clicked into becomes the focused pane.

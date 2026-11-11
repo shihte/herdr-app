@@ -706,25 +706,41 @@ export default class Settings extends View {
       (_e, cx) => { this.siaoSet({ [k]: Math.max(min, get(k, d) - by) }); cx.notify(); },
       (_e, cx) => { this.siaoSet({ [k]: Math.min(max, get(k, d) + by) }); cx.notify(); });
     const flip = (k, d) => this.toggle(t, `st-siao-${k}`, get(k, d), (_e, cx) => { this.siaoSet({ [k]: !get(k, d) }); cx.notify(); });
+    // One of a few, as a row of segments (the bottom content).
+    const seg = (key, options, value, onPick) => h_flex().rounded(7).border_1().border_color(t.border).bg(t.raised).overflow_hidden()
+      .children(options.map(([v, label], i) => div().id(`st-siao-${key}-${v}`).px(12).h(28).flex().items_center().cursor_pointer()
+        .text_size(13).text_color(v === value ? t.foreground : t.muted)
+        .when(v === value, (el) => el.bg(t.selected ?? t.hover)).when(i > 0, (el) => el.border_l(1).border_color(t.border))
+        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { onPick(v); cx.notify(); }).child(label)));
+    const bottom = ["quota", "terminal", "none"].includes(shared("siao.bottom")) ? shared("siao.bottom") : "quota";
     return v_flex()
       .w_full()
+      .child(this.heading(t, "版面"))
+      .child(this.row(t, "終端機下方", "放狀態欄、一排終端機，或什麼都不放（底部合攏）。分頁列右上的「底部」也能切換。",
+        seg("bottom", [["quota", "狀態欄"], ["terminal", "終端機"], ["none", "不顯示"]], bottom, (v) => setShared("siao.bottom", v))))
+      .child(this.row(t, "版面動畫時間", "側欄、抽屜、縫隙展開收合的時間。0 就是不要動畫。", step("animMs", 200, 50, 0, 1000, " ms")))
       .child(this.heading(t, "瀏覽器"))
       .child(this.row(t, "首頁", "預覽和＋開的瀏覽器分頁一開始打開的網址。",
         div().w(240).h(30).px(8).rounded(7).border_1().border_color(t.border).bg(t.raised).flex().items_center()
           .child(Input.new(this.siaoHome).w_full().text_size(13).text_color(t.foreground))))
+      .child(this.row(t, "網頁留白", "網頁和外框之間的距離。", step("pageInset", 6, 1, 0, 24, " px")))
+      .child(this.row(t, "網頁圓角", "網頁四個角的圓弧。", step("pageRadius", 7, 1, 0, 24, " px")))
       .child(this.heading(t, "底部終端機抽屜"))
       .child(this.row(t, "點一下打開的高度", "點白點（不拖）時抽屜打開的高度。", step("drawerHeight", 260, 20, 120, 800, " px")))
       .child(this.row(t, "放開就關閉的高度", "拖到比這矮再放開就關閉（同時出現跑動虛線）。", step("drawerCloseBelow", 120, 10, 40, 300, " px")))
-      .child(this.row(t, "縫隙收起延遲", "滑鼠離開用量列上方的縫之後多久收起。", step("slitDelay", 700, 100, 200, 3000, " ms")))
+      .child(this.row(t, "縫隙收起延遲", "滑鼠離開白點之後縫多久收起。", step("slitDelay", 700, 100, 200, 3000, " ms")))
+      .child(this.row(t, "白點感應寬度", "白點左右各多寬算是碰到它（變綠、變長、讓縫不收）。", step("gripReach", 36, 4, 12, 120, " px")))
       .child(this.heading(t, "分頁"))
       .child(this.row(t, "資料夾群組", "同時開著兩個以上資料夾的分頁時，用彩色標籤分組。", flip("groups", true)))
       .child(this.row(t, "群組收合動畫", "點群組標籤收起／展開分頁時滑動。", flip("tabAnim", true)))
+      .child(this.row(t, "群組動畫時間", "群組滑開／收起的時間。", step("tabAnimMs", 220, 20, 60, 800, " ms")))
       .child(this.heading(t, "代理"))
       .child(this.row(t, "顯示子代理", "Claude Code 開出的子代理（Agent/Task）列在它的代理下面。", flip("subagents", true)))
       .child(this.heading(t, "用量"))
       .child(this.row(t, "5 小時警示", "5 小時用量超過這個百分比時變紅並通知一次。", step("quota5h", 70, 5, 10, 100, "%")))
+      .child(this.row(t, "更新頻率", "多久重新讀一次用量。", step("quotaRefresh", 15, 5, 5, 300, " 秒")))
       .child(this.row(t, "今日警示", "今天用掉的本週額度超過這個百分比時變紅並通知一次。", step("quotaToday", 10, 1, 1, 100, "%")))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("改了立刻生效。版面（區塊大小、顏色）在 layouts/Siao.json，快捷鍵在 keys.json。"));
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("改了立刻生效。"));
   }
 
   // Updates --------------------------------------------------------------

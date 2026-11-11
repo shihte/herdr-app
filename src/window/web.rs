@@ -5,12 +5,13 @@
 //! page so the toolbar can show the address. Commands: `web.open {pane?, url}`, `web.back`, `web.forward`, `web.reload`.
 //!
 //! The page is a native view above the window's own drawing, so it covers whatever GPUI draws in its
-//! place. While a dialog, popup, menu or full-window overlay is up (the quick guide, the drawer drag),
-//! every page is hidden; so is a page whose pane wasn't drawn last frame
-//! (another tab, a zoomed neighbour).
+//! place. A dialog, popup or window over it is cut out of the page's layer (a mask with a hole the shape
+//! of the overlay's box) and a dialog dims it like the rest of the window, so the page stays in view
+//! round them; only for the one frame before a new overlay is measured are pages hidden. A page whose
+//! pane wasn't drawn last frame (another tab, a zoomed neighbour) is hidden.
 
 use super::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder, dpi};
 
@@ -26,7 +27,11 @@ pub struct Web {
     view: Rc<wry::WebView>,
     shown: Rc<Cell<bool>>,
     drawn: Rc<Cell<u64>>,
+    /// The mask last put on the page (size, holes, dimmed), so it is only rebuilt when it changes.
+    mask: Rc<RefCell<Mask>>,
 }
+
+type Mask = Option<((i32, i32), Vec<[i32; 4]>, bool, i32)>;
 
 /// What a page tells the window (from wry's callbacks, which have no window context).
 pub enum WebEvent {
@@ -73,7 +78,7 @@ impl AppWindow {
             }
             match self.web_build(&pane, &url, window, cx) {
                 Ok(view) => {
-                    self.webs.insert(pane, Web { view: Rc::new(view), shown: Rc::new(Cell::new(true)), drawn: Rc::new(Cell::new(0)) });
+                    self.webs.insert(pane, Web { view: Rc::new(view), shown: Rc::new(Cell::new(true)), drawn: Rc::new(Cell::new(0)), mask: Default::default() });
                 }
                 Err(e) => tracing::warn!("web pane {pane}: {e}"),
             }
@@ -143,7 +148,10 @@ impl AppWindow {
         if self.web_panes().iter().any(|(id, _)| !self.webs.contains_key(id)) {
             self.web_sync(window, cx);
         }
-        let cover = self.web_covered();
+        let cover = match self.web_cover() {
+            Some(c) => { *self.web_holes.borrow_mut() = c; false }
+            None => true,
+        };
         for w in self.webs.values() {
             if (cover || w.drawn.get() + 1 < self.web_frame_no) && w.shown.get() {
                 let _ = w.view.set_visible(false);
@@ -152,9 +160,21 @@ impl AppWindow {
         }
     }
 
+    /// The boxes of the overlays up now (None while one isn't measured yet) and whether a dialog dims.
+    fn web_cover(&self) -> Option<(Vec<Bounds<Pixels>>, bool)> {
+        let bounds = self.bounds.borrow();
+        let mut holes = Vec::new();
+        for o in self.overlays.iter().filter(|o| o.kind != OverlayKind::Toast) {
+            let key = if o.kind == OverlayKind::Window { o.slot.clone() } else { format!("box:{}", o.id) };
+            holes.push(*bounds.get(&key)?);
+        }
+        Some((holes, self.overlays.iter().any(|o| o.kind == OverlayKind::Dialog)))
+    }
+
     fn web_covered(&self) -> bool {
-        // Resizing (a divider dragged, a glide) never hides it: it follows its box every frame.
-        self.overlays.iter().any(|o| !matches!(o.kind, OverlayKind::Toast))
+        // Resizing (a divider dragged, a glide) never hides it: it follows its box every frame. An
+        // overlay hides it only until its box is known.
+        self.web_cover().is_none()
     }
 
     /// The page in pane `id`'s place: a measured box the native view is moved onto.
@@ -166,11 +186,13 @@ impl AppWindow {
             return div().size_full().bg(c("background")).into_any_element();
         }
         let (view, shown, drawn, frame) = (w.view.clone(), w.shown.clone(), w.drawn.clone(), self.web_frame_no);
+        let (mask, holes) = (w.mask.clone(), self.web_holes.clone());
         let blur = w.view.clone();
         // A frame of the pane's own background round the page, so it never runs into the pane's border
         // or the toolbar's line (its corners are rounded natively, round_corners).
         // The same line under the toolbar for a browser tab and for 預覽 (the toolbar draws none).
-        div().size_full().border_t(px(1.)).border_color(c("border")).p(settings::z(6.)).child(
+        let (inset, radius) = page_look();
+        div().size_full().border_t(px(1.)).border_color(c("border")).p(settings::z(inset)).child(
             canvas(
                 move |bounds, _, _| {
                     let _ = view.set_bounds(Rect {
@@ -182,6 +204,18 @@ impl AppWindow {
                         shown.set(true);
                     }
                     drawn.set(frame);
+                    // The overlays over this page, in its own coordinates, rounded like their boxes.
+                    let (over, dim) = &*holes.borrow();
+                    let local: Vec<[i32; 4]> = over.iter().filter(|h| h.intersects(&bounds)).map(|h| {
+                        let o = h.origin - bounds.origin;
+                        [f32::from(o.x).round() as i32, f32::from(o.y).round() as i32, f32::from(h.size.width).round() as i32, f32::from(h.size.height).round() as i32]
+                    }).collect();
+                    let want = Some(((f32::from(bounds.size.width).round() as i32, f32::from(bounds.size.height).round() as i32), local, *dim, radius as i32));
+                    if *mask.borrow() != want {
+                        let (size, local, dim, _) = want.clone().unwrap();
+                        set_mask(&view, size, &local, dim, f32::from(settings::z(8.0)) as f64, radius as f64);
+                        *mask.borrow_mut() = want;
+                    }
                     bounds
                 },
                 move |_, bounds, window, _| {
@@ -218,6 +252,13 @@ impl AppWindow {
     }
 }
 
+/// 設定 → SiaoDesk 網頁留白／圓角 (shared "siao.settings" pageInset, pageRadius): 6 and 7 px unless changed.
+fn page_look() -> (f32, f32) {
+    let s = mods::shared("siao.settings");
+    let get = |k: &str, d: f64| s.as_ref().and_then(|s| s.get(k).and_then(Value::as_f64)).unwrap_or(d).clamp(0.0, 40.0) as f32;
+    (get("pageInset", 6.0), get("pageRadius", 7.0))
+}
+
 /// The page sits as a card inset in its pane (render_web) and GPUI can't clip a native view: round
 /// its own corners, all four.
 fn round_corners(view: &wry::WebView) {
@@ -235,6 +276,76 @@ fn round_corners(view: &wry::WebView) {
             // All four (kCALayerMinXMinYCorner | MaxXMinY | MinXMaxY | MaxXMaxY).
             let _: () = msg_send![layer, setMaskedCorners: 15usize];
         }
+    }
+}
+
+/// Cuts `holes` (x, y, w, h from the page's top left) out of the page, rounded by `radius`, and dims it
+/// while a dialog is up — what GPUI draws there (the overlay, its shadow) shows through.
+fn set_mask(view: &wry::WebView, size: (i32, i32), holes: &[[i32; 4]], dim: bool, radius: f64, corner: f64) {
+    use objc2::runtime::AnyObject;
+    use objc2::{Encode, Encoding, class, msg_send};
+    use std::ffi::c_void;
+    use wry::WebViewExtMacOS;
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct P { x: f64, y: f64 }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct S { w: f64, h: f64 }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct R { o: P, s: S }
+    unsafe impl Encode for P { const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]); }
+    unsafe impl Encode for S { const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]); }
+    unsafe impl Encode for R { const ENCODING: Encoding = Encoding::Struct("CGRect", &[P::ENCODING, S::ENCODING]); }
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    struct Path(*mut c_void);
+    unsafe impl Encode for Path { const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[])); }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPathCreateMutable() -> *mut c_void;
+        fn CGPathAddRect(path: *mut c_void, m: *const c_void, rect: R);
+        fn CGPathAddRoundedRect(path: *mut c_void, m: *const c_void, rect: R, w: f64, h: f64);
+        fn CGPathRelease(path: *mut c_void);
+    }
+    #[link(name = "QuartzCore", kind = "framework")]
+    unsafe extern "C" {
+        static kCAFillRuleEvenOdd: &'static AnyObject;
+    }
+    let wk = view.webview();
+    unsafe {
+        let wk: &AnyObject = &*(objc2::rc::Retained::as_ptr(&wk) as *const AnyObject);
+        let layer: *mut AnyObject = msg_send![wk, layer];
+        let Some(layer) = layer.as_ref() else { return };
+        let _: () = msg_send![class!(CATransaction), begin];
+        let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+        let _: () = msg_send![layer, setOpacity: if dim { 0.62f32 } else { 1.0f32 }];
+        let _: () = msg_send![layer, setCornerRadius: corner];
+        if holes.is_empty() {
+            let _: () = msg_send![layer, setMask: std::ptr::null_mut::<AnyObject>()];
+        } else {
+            // The mask lies in the page layer's own space: top-down if that layer's geometry is flipped
+            // (AppKit flips a flipped view's backing layer), bottom-up otherwise.
+            let flipped: bool = msg_send![layer, isGeometryFlipped];
+            let (w, h) = (size.0 as f64, size.1 as f64);
+            let path = CGPathCreateMutable();
+            CGPathAddRect(path, std::ptr::null(), R { o: P { x: 0.0, y: 0.0 }, s: S { w, h } });
+            for [x, y, hw, hh] in holes {
+                let (x, hw, hh) = (*x as f64, *hw as f64, *hh as f64);
+                let y = if flipped { *y as f64 } else { h - *y as f64 - hh };
+                CGPathAddRoundedRect(path, std::ptr::null(), R { o: P { x, y }, s: S { w: hw, h: hh } }, radius, radius);
+            }
+            let shape: *mut AnyObject = msg_send![class!(CAShapeLayer), layer];
+            if let Some(shape) = shape.as_ref() {
+                let _: () = msg_send![shape, setFrame: R { o: P { x: 0.0, y: 0.0 }, s: S { w, h } }];
+                let _: () = msg_send![shape, setPath: Path(path)];
+                let _: () = msg_send![shape, setFillRule: kCAFillRuleEvenOdd];
+                let _: () = msg_send![layer, setMask: shape];
+            }
+            CGPathRelease(path);
+        }
+        let _: () = msg_send![class!(CATransaction), commit];
     }
 }
 
