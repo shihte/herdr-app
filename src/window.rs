@@ -4487,6 +4487,14 @@ impl AppWindow {
             .filter(|c| matches!(c.size, Some(Span::Px { px }) if px < drawer_close_below()))
             .map(|c| c.id.clone()).collect();
         for id in drawers {
+            // SiaoDesk: the bottom terminal (底部 = 終端機) only folds down to its card: hidden with its shell
+            // kept, back at its usual height for the next time it opens.
+            if id == "drawer-all" && mods::shared("siao.bottom").and_then(|v| v.as_str().map(str::to_owned)).as_deref() == Some("terminal") {
+                let px = mods::shared("siao.settings").and_then(|s| s.get("bottomHeight").or(s.get("drawerHeight")).and_then(Value::as_f64)).unwrap_or(260.0);
+                if let Some(n) = self.chrome.find_mut(&id) { n.size = Some(Span::Px { px: px as f32 }); }
+                self.dispatch("layout.hide", &json!({ "id": id }), true, window, cx);
+                continue;
+            }
             self.dispatch("drawer.close", &json!({ "id": id }), true, window, cx);
         }
     }
@@ -4542,7 +4550,9 @@ impl AppWindow {
         }
         // SiaoDesk: a drawer dragged this short closes when let go — its border turns to running dashes.
         let short = [(a_id.as_str(), new_a), (b_id.as_str(), total - new_a)].into_iter()
-            .find(|(id, px)| is_drawer(&self.chrome, id) && *px < drawer_close_below())
+            .find(|(id, px)| is_drawer(&self.chrome, id) && *px < drawer_close_below()
+                // The bottom terminal only folds to its card (close_squeezed): nothing to warn about.
+                && !(*id == "drawer-all" && mods::shared("siao.bottom").and_then(|v| v.as_str().map(str::to_owned)).as_deref() == Some("terminal")))
             .map(|(id, _)| id.to_owned());
         if short != self.drawer_hint { self.drawer_hint = short; }
     }
