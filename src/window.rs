@@ -3372,8 +3372,11 @@ impl AppWindow {
                 if self.chrome.find(&id).is_some_and(|n| n.hidden) {
                     self.dispatch("layout.show", &json!({ "id": id }), person, window, cx);
                 }
-                self.model.focus_pane(&id);
-                self.focused_pane = Some(id.clone());
+                // SiaoDesk: a drawer that pops up under the pointer (focus: false) leaves the keyboard where it is.
+                if a.get("focus").and_then(Value::as_bool) != Some(false) {
+                    self.model.focus_pane(&id);
+                    self.focused_pane = Some(id.clone());
+                }
             }
             "drawer.hint" => {
                 let id = Self::owned(a, "id").filter(|_| a.get("on").and_then(Value::as_bool) != Some(false));
@@ -4204,7 +4207,27 @@ impl AppWindow {
             }
         };
         let row = frame.and_then(|f| f.header.as_ref()).filter(|h| !h.bottom() && !h.hover()).map(pane_size::header_height);
-        el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).children(self.drawer_hint_el(&n.id)).into_any_element()
+        let el = el.children(self.render_floats(n, cx)).children(self.pane_grip(&n.id, row, cx)).children(self.drawer_hint_el(&n.id)).into_any_element();
+        // SiaoDesk: which drawer the pointer is over (shared "siao.drawer.hover"), so SiaoDrawer keeps a
+        // drawer that popped up open while it's in use. Entered on a real move: on_hover also fires for
+        // a pointer last seen where a block just slid in.
+        if n.id.starts_with("drawer-") && matches!(n.kind, Kind::Block { content: Content::Terminal { .. } }) {
+            let (a, b) = (n.id.clone(), n.id.clone());
+            return div().id(SharedString::from(format!("drawer-hover-{}", n.id))).size_full().flex()
+                .on_mouse_move(move |_, _, _| {
+                    if mods::shared("siao.drawer.hover").and_then(|v| v.as_str().map(str::to_owned)).as_deref() != Some(a.as_str()) {
+                        mods::set_shared("siao.drawer.hover".into(), json!(a));
+                    }
+                })
+                .on_hover(move |on, _, _| {
+                    if !*on && mods::shared("siao.drawer.hover").and_then(|v| v.as_str().map(str::to_owned)).as_deref() == Some(b.as_str()) {
+                        mods::set_shared("siao.drawer.hover".into(), Value::Null);
+                    }
+                })
+                .child(el)
+                .into_any_element();
+        }
+        el
     }
 
     fn render_block(&self, n: &Node, content: &Content, focused: &HashSet<String>, cx: &mut Context<Self>) -> AnyElement {

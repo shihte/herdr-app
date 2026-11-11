@@ -2902,7 +2902,9 @@ pub(crate) fn spin_layer(view: gpui::EntityId) -> AnyElement {
                     let _ = window.paint_svg(s.bounds, s.path, None, matrix, s.color, cx);
                 });
             }
-            wake_view_after(Duration::from_millis(100), window, cx);
+            // SiaoDesk: every frame (was 100 ms, 10 steps a second, which stuttered). Only this thin layer
+            // repaints; the view under it stays cached.
+            wake_view_after(Duration::from_millis(16), window, cx);
         },
     )
     .absolute()

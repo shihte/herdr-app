@@ -81,7 +81,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("web.back", &[opt("pane")], "SiaoDesk: go back in a 預覽 pane."),
     cmd("web.forward", &[opt("pane")], "SiaoDesk: go forward in a 預覽 pane."),
     cmd("web.reload", &[opt("pane")], "SiaoDesk: reload a 預覽 pane."),
-    cmd("drawer.open", &[req("id"), opt("px")], "SiaoDesk: open a bottom drawer (a layout terminal block drawer-*), starting a shell in it."),
+    cmd("drawer.open", &[req("id"), opt("px"), opt("focus")], "SiaoDesk: open a bottom drawer (a layout terminal block drawer-*), starting a shell in it."),
     cmd("drawer.hint", &[opt("id"), opt("on")], "SiaoDesk: running dashes round a drawer (letting go would close it); no id or on:false clears it."),
     cmd("drawer.close", &[req("id")], "SiaoDesk: fold a bottom drawer away and end its shell."),
     cmd("layout.resize", &[req("id"), opt("px"), opt("weight"), opt("instant")], "Size a layout node (a pixel size glides there unless instant)."),
