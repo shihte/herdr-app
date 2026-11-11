@@ -716,10 +716,10 @@ export default class Settings extends View {
     return v_flex()
       .w_full()
       .child(this.heading(t, "版面"))
-      .child(this.row(t, "終端機下方", "放狀態欄、一排終端機，或什麼都不放（底部合攏）。分頁列右上的「底部」也能切換。",
+      .child(this.row(t, "終端機下方", "放狀態欄、一排終端機，或什麼都不放（底部合攏）。只在這裡改。",
         seg("bottom", [["quota", "狀態欄"], ["terminal", "終端機"], ["none", "不顯示"]], bottom, (v) => setShared("siao.bottom", v))))
-      .child(this.row(t, "底部終端機自動收合", "底部放終端機時，平常收成一行只顯示它是什麼；滑鼠移過去就往上彈出，離開就收回（裡面的程式不會結束）。關掉就一直開著。", flip("drawerAutoPop", true)))
-      .child(this.row(t, "彈出前停留", "滑鼠在那一行上停多久才彈出，避免路過就彈。", step("popDelay", 250, 50, 0, 1500, " ms")))
+      .child(this.row(t, "底部終端機自動收合", "底部放終端機時，平常收成跟狀態欄一樣高、只寫它是什麼；滑鼠移過去就展開，離開就收回（裡面的程式不會結束）。關掉就一直開著。", flip("drawerAutoPop", true)))
+      .child(this.row(t, "彈出前停留", "滑鼠停多久才展開，避免路過就彈。", step("popDelay", 250, 50, 0, 1500, " ms")))
       .child(this.row(t, "版面動畫時間", "側欄、抽屜、縫隙展開收合的時間。0 就是不要動畫。", step("animMs", 200, 50, 0, 1000, " ms")))
       .child(this.heading(t, "瀏覽器"))
       .child(this.row(t, "首頁", "預覽和＋開的瀏覽器分頁一開始打開的網址。",
