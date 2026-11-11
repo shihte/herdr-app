@@ -201,6 +201,12 @@ impl Grid {
         if (crate::anim::gliding() || crate::anim::held()) && self.vt.cols > 0 && self.vt.rows > 0 {
             return;
         }
+        // SiaoDesk: a pane squeezed to a few rows (a drawer pulled almost shut) keeps its last real size.
+        // A shell shrunk below its prompt's height pushes the prompt's upper lines into the scrollback and
+        // prints them again on every redraw, so each squeeze would leave another copy behind.
+        if rows < MIN_ROWS && self.vt.rows >= MIN_ROWS {
+            return;
+        }
         self.vt.resize(cols, rows, dev.0, dev.1);
         self.vt_cell = dev;
         if let Some(chan) = self.channel {
@@ -211,6 +217,9 @@ impl Grid {
         }
     }
 }
+
+/// SiaoDesk: fewer rows than this and a pane keeps its size (see `Grid::fit`).
+const MIN_ROWS: u16 = 6;
 
 /// A cell in device pixels.
 fn device_cell(cell: Size<Pixels>, scale: f32) -> (u32, u32) {
