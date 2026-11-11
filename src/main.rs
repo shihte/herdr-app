@@ -110,12 +110,19 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     core_bin::fill_path();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("HERDR_APP_LOG")
-                .unwrap_or_else(|_| "warn,herdr_app=info,gpui_shell=info".into()),
-        )
-        .init();
+    let filter = || tracing_subscriber::EnvFilter::try_from_env("HERDR_APP_LOG")
+        .unwrap_or_else(|_| "warn,herdr_app=info,gpui_shell=info".into());
+    // SiaoDesk: opened from the Dock there is no terminal to read stderr in, so warnings (a mod's
+    // render that threw, a page that failed) go to ~/Library/Logs/SiaoDesk.log instead.
+    let log = (!std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .then(|| std::env::var_os("HOME"))
+        .flatten()
+        .map(|h| std::path::PathBuf::from(h).join("Library/Logs/SiaoDesk.log"))
+        .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    match log {
+        Some(file) => tracing_subscriber::fmt().with_env_filter(filter()).with_ansi(false).with_writer(std::sync::Mutex::new(file)).init(),
+        None => tracing_subscriber::fmt().with_env_filter(filter()).init(),
+    }
 
     if update::apply_on_startup() {
         return;

@@ -3292,7 +3292,12 @@ impl AppWindow {
                         let generation = crate::anim::start(id, px, 0.0);
                         let id = id.to_owned();
                         cx.spawn_in(window, async move |this, cx| {
+                            // Until it has really shrunk on screen (its clock starts at its first frame).
                             cx.background_executor().timer(crate::anim::DURATION).await;
+                            for _ in 0..60 {
+                                if !crate::anim::active(&id) { break; }
+                                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
+                            }
                             let _ = this.update(cx, |this, cx| {
                                 if crate::anim::generation(&id) != generation {
                                     return;

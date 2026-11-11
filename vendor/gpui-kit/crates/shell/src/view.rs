@@ -24,13 +24,12 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, Context, EntityId, IntoElement, ParentElement as _, Render, Styled as _, Window, div};
+use gpui::{AnyElement, Context, EntityId, IntoElement, Render, Styled as _, Window, div};
 
 use crate::{
     engine::{ShellRuntime, ViewObject},
     materialize::materialize,
     policy::Policy,
-    runtime::{error_banner, error_overlay},
     snapshot::RenderSnapshot,
 };
 
@@ -260,7 +259,11 @@ impl ScriptView {
                 self.previous = self.current.replace(snapshot);
                 self.error = None;
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                // SiaoDesk: never on screen (draw), so it goes to the log.
+                tracing::warn!("mod view render failed: {error:#}");
+                self.error = Some(error.to_string())
+            }
         }
     }
 }
@@ -316,14 +319,11 @@ impl ScriptView {
             // interface is still there to show. Reporting over it beats
             // replacing it: the reader keeps their scroll, their focus and
             // whatever they were reading, and still learns what broke.
-            (Some(message), Some(snapshot)) => div()
-                .relative()
-                .size_full()
-                .child(materialize(&self.runtime, snapshot, window, cx))
-                .child(error_banner(message, window, cx))
-                .into_any_element(),
-            // Nothing to keep: this view has never rendered successfully.
-            (Some(message), None) => error_overlay(message, window, cx),
+            // SiaoDesk: a failed build keeps showing the last good interface and nothing over it
+            // (the failure is in ~/Library/Logs/SiaoDesk.log, rebuild); one that never rendered shows
+            // nothing. A panel of English stack trace in the usage strip helps nobody using the app.
+            (Some(_), Some(snapshot)) => materialize(&self.runtime, snapshot, window, cx),
+            (Some(_), None) => div().size_full().into_any_element(),
             // Unreachable in practice: a build either publishes a snapshot or
             // records an error. An empty element is the honest answer if it ever
             // is reached, rather than a panic in a render.

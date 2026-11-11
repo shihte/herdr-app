@@ -11,7 +11,18 @@ pub const DURATION: Duration = Duration::from_millis(200);
 struct Glide {
     from: f32,
     to: f32,
-    start: Instant,
+    /// Set by the first frame that draws it, not by the command: a frame that comes late (a mod's
+    /// command arrives asynchronously, a busy frame before it) would otherwise eat the glide and it
+    /// jumps — or doesn't show at all.
+    start: Option<Instant>,
+    /// When the command asked for it: a node that is never drawn still ends its glide on time.
+    made: Instant,
+}
+
+impl Glide {
+    fn t(&self) -> f32 {
+        (self.start.unwrap_or(self.made).elapsed().as_secs_f32() / DURATION.as_secs_f32()).min(1.0)
+    }
 }
 
 thread_local! {
@@ -24,7 +35,7 @@ thread_local! {
 /// delayed step (hiding at the end) can tell whether a newer glide replaced it.
 pub fn start(id: &str, from: f32, to: f32) -> u64 {
     let from = current(id).unwrap_or(from);
-    GLIDES.with(|g| g.borrow_mut().insert(id.to_owned(), Glide { from, to, start: Instant::now() }));
+    GLIDES.with(|g| g.borrow_mut().insert(id.to_owned(), Glide { from, to, start: None, made: Instant::now() }));
     BUSY.with(|b| b.set(true));
     GENERATION.with(|g| {
         let mut g = g.borrow_mut();
@@ -42,8 +53,12 @@ pub fn generation(id: &str) -> u64 {
 pub fn current(id: &str) -> Option<f32> {
     GLIDES.with(|g| {
         let mut g = g.borrow_mut();
-        let glide = g.get(id)?;
-        let t = (glide.start.elapsed().as_secs_f32() / DURATION.as_secs_f32()).min(1.0);
+        let glide = g.get_mut(id)?;
+        if glide.start.is_none() {
+            // Late by more than a few frames: the glide still plays whole, from now.
+            glide.start = Some(if glide.made.elapsed() < DURATION { Instant::now() } else { glide.made });
+        }
+        let t = glide.t();
         if t >= 1.0 {
             g.remove(id);
             return None;
@@ -57,7 +72,12 @@ pub fn current(id: &str) -> Option<f32> {
 /// Whether some glide is still under way. Terminals keep their size meanwhile and fit once it ends:
 /// resizing one every frame makes the program in it redraw its whole screen each time (it stutters).
 pub fn gliding() -> bool {
-    GLIDES.with(|g| g.borrow().values().any(|glide| glide.start.elapsed() < DURATION))
+    GLIDES.with(|g| g.borrow().values().any(|glide| glide.t() < 1.0))
+}
+
+/// Whether node `id` is still gliding (a hide marks it hidden only after this turns false).
+pub fn active(id: &str) -> bool {
+    GLIDES.with(|g| g.borrow().get(id).is_some_and(|glide| glide.t() < 1.0))
 }
 
 /// Whether anything glided during the last frame (then the next frame should come right away).
