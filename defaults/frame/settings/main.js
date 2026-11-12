@@ -741,7 +741,7 @@ export default class Settings extends View {
       .child(this.heading(t, "代理"))
       .child(this.row(t, "顯示子代理", "Claude Code 開出的子代理（Agent/Task）列在它的代理下面。", flip("subagents", true)))
       .child(this.row(t, "子代理顯示目前動作", "子代理名稱下面寫它正在做什麼（讀哪個檔、跑什麼指令）。", flip("subDoing", true)))
-      .child(this.row(t, "點子代理打開對話", "在右邊預覽打開它的對話；關掉就跳到它的母代理。", flip("subOpen", true)))
+      .child(this.row(t, "點子代理切到它的畫面", "跟在 Claude Code 裡選它一樣切過去；關掉就只跳到它的母代理。", flip("subOpen", true)))
       .child(this.row(t, "代理列的重新整理鈕", "代理名稱右邊的 ↻（退出再接回同一個會話）。", flip("agentRestart", true)))
       .child(this.heading(t, "狀態欄"))
       .child(this.row(t, "會話", "目前代理的模型與 context 用量。", flip("barSession", true)))
