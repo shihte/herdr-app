@@ -118,12 +118,23 @@ export default class MachineAdd extends View {
     this.state[target] = "adding";
     cx.notify();
     cx.spawn(async (cx) => {
-      const r = await hc(["machine", "add", target, "--json"]).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
-      let why = null;
-      try {
-        why = r.code === 0 ? null : (JSON.parse(r.stdout || r.stderr).error ?? { message: (r.stderr || r.stdout).trim() });
-      } catch {
-        why = { message: (r.stderr || r.stdout || "it didn't answer").trim() };
+      const tryAdd = async (extra) => {
+        const r = await hc(["machine", "add", target, "--json", ...extra]).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
+        try {
+          return r.code === 0 ? null : (JSON.parse(r.stdout || r.stderr).error ?? { message: (r.stderr || r.stdout).trim() });
+        } catch {
+          return { message: (r.stderr || r.stdout || "it didn't answer").trim() };
+        }
+      };
+      let why = await tryAdd([]);
+      // SiaoDesk: no hc there (or one too old) is the one question a click on 新增 already answers:
+      // copy this hc over (--install) and add it, instead of sending the user to a terminal.
+      if (why && ["hc_missing", "incompatible"].includes(why.kind)) {
+        this.state[target] = "adding";
+        this.installing = target;
+        cx.notify();
+        why = await tryAdd(["--install"]);
+        this.installing = null;
       }
       if (!why) {
         delete this.state[target];
@@ -134,8 +145,9 @@ export default class MachineAdd extends View {
       } else if (["hc_missing", "incompatible", "login_needed", "auth_failed", "host_key"].includes(why.kind) || /password|passphrase|host key|permission denied|login/i.test(why.message ?? "")) {
         const quoted = /^[a-z0-9_@%+=:,./-]+$/i.test(target) ? target : "'" + target.replace(/'/g, "'\\''") + "'";
         this.pending.add(target);
-        this.state[target] = `Couldn't add ${target} here: it needs you to answer something (a password, a new host key, or installing herdr-core there). Run \`hc machine add ${quoted}\` in a terminal. \`hc machine --help\` shows the options.`;
-      } else this.state[target] = why.message || "it didn't work";
+        this.state[target] = `${target} 需要你在終端機回答（密碼或新的主機金鑰）。在終端機執行 \`hc machine add ${quoted}\`。`;
+      } else if (why.kind === "unreachable") this.state[target] = `連不到 ${target}：${(why.message || "").replace(/^cannot reach [^:]+: /, "")}`;
+      else this.state[target] = why.message || "沒有成功";
       await this.refresh();
       cx.notify();
     });
@@ -220,7 +232,7 @@ export default class MachineAdd extends View {
     const right = done
       ? h_flex().gap(5).items_center().text_size(12).text_color(t.ansi2).child(svg(I("circle-check")).size(13)).child("Added")
       : st === "adding"
-        ? h_flex().gap(6).items_center().text_size(12).text_color(t.muted).child(svg(I("spinner")).size(12).text_color(t.working).spin(900)).child("Connecting")
+        ? h_flex().gap(6).items_center().text_size(12).text_color(t.muted).child(svg(I("spinner")).size(12).text_color(t.working).spin(900)).child(this.installing === target ? "安裝 hc 到那台機器…" : "Connecting")
         : div()
               .id(`ma-add-${target}`)
               .px(10)
